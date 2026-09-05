@@ -1,135 +1,215 @@
-import io
-import math
+# ============================================================
+# REACTOR SCALE-UP & MIXING ENGINEERING DASHBOARD
+# ============================================================
+# File: app.py
+#
+# Purpose:
+#   Professional Streamlit dashboard for:
+#   - Reactor geometry
+#   - Agitator selection
+#   - Mixing calculations
+#   - Scale-up studies
+#   - P/V
+#   - Tip speed
+#   - Power
+#   - Pumping
+#   - Reynolds number
+#   - Froude number
+#   - Njs screening
+#   - KLa screening
+#   - Blend-time screening
+#   - Heat-transfer area
+#   - 3D reactor visualization
+#   - Validation checks
+#   - Excel export
+#   - Browser persistence
+#
+# Deployment:
+#   GitHub + Streamlit Community Cloud
+# ============================================================
 
+import json
+import hashlib
+from datetime import datetime
+
+import numpy as np
 import pandas as pd
 import streamlit as st
 
-from libraries.agitator_library import (
-    AGITATORS
+# ------------------------------------------------------------
+# LOCAL STORAGE
+# ------------------------------------------------------------
+
+try:
+    from streamlit_local_storage import LocalStorage
+
+    LOCAL_STORAGE_AVAILABLE = True
+    storage = LocalStorage()
+
+except ImportError:
+    LOCAL_STORAGE_AVAILABLE = False
+    storage = None
+
+
+# ------------------------------------------------------------
+# PROJECT MODULE IMPORTS
+# ------------------------------------------------------------
+
+from calculations.engine import calculate_reactor
+from calculations.engine import compare_reactors
+from calculations.engine import validation_checks
+
+from libraries.agitator_geometry import (
+    AGITATOR_LIBRARY,
+    get_agitator,
 )
 
-from libraries.reactor_geometry_library import (
-    BOTTOM_GEOMETRIES,
-    TOP_GEOMETRIES
+from libraries.reactor_geometry import (
+    REACTOR_GEOMETRY_LIBRARY,
+    calculate_liquid_height,
+    calculate_total_volume,
 )
 
-from libraries.baffle_library import (
-    BAFFLES
-)
-
-from calculations.geometry import (
-    calculate_total_geometry,
-    calculate_liquid_height
-)
-
-from calculations.mixing import (
-    calculate_mixing
-)
-
-from calculations.njs import (
-    calculate_njs
-)
-
-from calculations.scaleup import (
-    calculate_scaleup_rpm
-)
-
-from calculations.validation import (
-    validation_checks
-)
-
-from visualization.reactor_3d import (
-    create_reactor_3d
-)
+from visualization.reactor_3d import create_reactor_3d
 
 
-# =========================================================
-# PAGE
-# =========================================================
+# ============================================================
+# PAGE CONFIGURATION
+# ============================================================
 
 st.set_page_config(
-    page_title="Reactor Scale-Up Engineering Dashboard",
-    page_icon="⚗️",
+    page_title="Reactor Scale-Up Dashboard",
+    page_icon="🏭",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 
-# =========================================================
-# CSS
-# =========================================================
+# ============================================================
+# CUSTOM CSS
+# ============================================================
 
 st.markdown(
     """
     <style>
 
-    .block-container {
-        max-width: 1700px;
-        padding-top: 1rem;
+    /* Main application */
+
+    .main {
+        background-color: #f7f9fc;
     }
+
+    /* Title */
+
+    .dashboard-title {
+        font-size: 34px;
+        font-weight: 700;
+        margin-bottom: 0px;
+    }
+
+    .dashboard-subtitle {
+        color: #6b7280;
+        font-size: 15px;
+        margin-bottom: 20px;
+    }
+
+    /* Cards */
 
     .metric-card {
-        border: 1px solid #d9e1ea;
+        background: white;
         border-radius: 12px;
-        padding: 12px;
-        background: #ffffff;
+        padding: 18px;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0px 2px 8px rgba(0,0,0,0.04);
     }
 
-    .title {
-        font-size: 2.2rem;
+    .metric-title {
+        color: #6b7280;
+        font-size: 13px;
+        margin-bottom: 4px;
+    }
+
+    .metric-value {
+        font-size: 24px;
         font-weight: 700;
+    }
+
+    /* Section */
+
+    .section-title {
+        font-size: 21px;
+        font-weight: 700;
+        margin-top: 10px;
+        margin-bottom: 8px;
+    }
+
+    /* Status */
+
+    .status-pass {
+        background-color: #dcfce7;
+        color: #166534;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-weight: 600;
+    }
+
+    .status-warning {
+        background-color: #fef3c7;
+        color: #92400e;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-weight: 600;
+    }
+
+    .status-fail {
+        background-color: #fee2e2;
+        color: #991b1b;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-weight: 600;
+    }
+
+    /* Sidebar */
+
+    section[data-testid="stSidebar"] {
+        background-color: #111827;
+    }
+
+    section[data-testid="stSidebar"] * {
+        color: white;
     }
 
     </style>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 
-# =========================================================
-# SESSION MEMORY
-# =========================================================
+# ============================================================
+# CONSTANTS
+# ============================================================
 
-if "project" not in st.session_state:
+STORAGE_KEY = "reactor_scaleup_dashboard_project_v1"
 
-    st.session_state.project = {
+SCALE_OPTIONS = [
+    "Lab",
+    "Pilot",
+    "Commercial",
+]
 
-        "name":
-            "New Reactor Scale-Up Study",
+STUDY_MODES = {
+    "Single Reactor": ["Lab"],
+    "Lab vs Pilot": ["Lab", "Pilot"],
+    "Pilot vs Commercial": ["Pilot", "Commercial"],
+    "Lab vs Commercial": ["Lab", "Commercial"],
+    "Lab vs Pilot vs Commercial": [
+        "Lab",
+        "Pilot",
+        "Commercial",
+    ],
+}
 
-        "product":
-            "",
-
-        "engineer":
-            "",
-
-        "reaction":
-            "Liquid-Liquid",
-
-        "analysis_mode":
-            "Single Reactor",
-
-        "criterion":
-            "Constant P/V"
-    }
-
-
-if "reactors" not in st.session_state:
-
-    st.session_state.reactors = {}
-
-
-if "selected_reactor" not in st.session_state:
-
-    st.session_state.selected_reactor = "Pilot"
-
-
-# =========================================================
-# REACTION TYPES
-# =========================================================
-
-REACTIONS = [
-
+REACTION_TYPES = [
     "Liquid-Liquid",
     "Solid-Liquid",
     "Gas-Liquid",
@@ -139,1532 +219,1394 @@ REACTIONS = [
     "Dissolution",
     "Extraction",
     "Neutralization",
-    "Other"
+    "Other",
 ]
 
-
-# =========================================================
-# ANALYSIS MODES
-# =========================================================
-
-ANALYSIS_MODES = [
-
-    "Single Reactor",
-
-    "Lab vs Pilot",
-
-    "Pilot vs Commercial",
-
-    "Lab vs Commercial",
-
-    "Lab vs Pilot vs Commercial"
-]
-
-
-# =========================================================
-# SCALEUP
-# =========================================================
-
-CRITERIA = [
-
+SCALE_UP_CRITERIA = [
     "Constant P/V",
-
     "Constant Tip Speed",
-
     "Constant RPM",
-
     "Constant Froude Number",
-
     "Constant Reynolds Number",
-
-    "Constant Pumping / Volume"
+    "Constant N/Njs",
+    "Constant Pumping / Volume",
+    "Constant KLa",
+    "User Defined",
 ]
 
 
-# =========================================================
+# ============================================================
+# DEFAULT REACTOR DATA
+# ============================================================
+
+DEFAULT_REACTOR = {
+    "working_volume": 1000.0,
+    "tank_id": 1000.0,
+    "straight_side_height": 1500.0,
+
+    "bottom_type": "2:1 Ellipsoidal",
+    "top_type": "2:1 Ellipsoidal",
+
+    "rpm": 100.0,
+
+    "impeller_type": "Pitched Blade Turbine",
+    "impeller_diameter": 400.0,
+    "number_of_impellers": 1,
+
+    "impeller_clearance": 200.0,
+
+    "density": 1000.0,
+    "viscosity": 1.0,
+    "surface_tension": 0.072,
+
+    "solid_density": 2500.0,
+    "solid_concentration": 0.0,
+    "particle_size": 100.0,
+
+    "gas_flow": 0.0,
+
+    "baffles": 4,
+    "baffle_width": 100.0,
+
+    "np_override": None,
+    "nq_override": None,
+
+    "suspension_s": None,
+
+    "kla_coefficient": 0.20,
+
+    "blend_coefficient": 5.0,
+
+    "notes": "",
+}
+
+
+# ============================================================
+# DEFAULT PROJECT
+# ============================================================
+
+DEFAULT_PROJECT = {
+    "project_name": "New Reactor Scale-Up Study",
+
+    "project_number": "",
+    "prepared_by": "",
+    "company": "",
+
+    "reaction_type": "Liquid-Liquid",
+
+    "study_mode": "Lab vs Pilot vs Commercial",
+
+    "scale_up_criterion": "Constant P/V",
+
+    "selected_scales": [
+        "Lab",
+        "Pilot",
+        "Commercial",
+    ],
+
+    "reactors": {
+        "Lab": DEFAULT_REACTOR.copy(),
+        "Pilot": DEFAULT_REACTOR.copy(),
+        "Commercial": DEFAULT_REACTOR.copy(),
+    },
+}
+
+
+# ============================================================
+# SESSION STATE INITIALIZATION
+# ============================================================
+
+def initialize_session_state():
+
+    if "project" not in st.session_state:
+
+        st.session_state.project = json.loads(
+            json.dumps(DEFAULT_PROJECT)
+        )
+
+    if "last_saved_signature" not in st.session_state:
+        st.session_state.last_saved_signature = None
+
+    if "storage_loaded" not in st.session_state:
+        st.session_state.storage_loaded = False
+
+    if "page" not in st.session_state:
+        st.session_state.page = "Dashboard"
+
+
+# ============================================================
+# LOCAL STORAGE FUNCTIONS
+# ============================================================
+
+def project_signature(project):
+
+    payload = json.dumps(
+        project,
+        sort_keys=True,
+        default=str,
+    )
+
+    return hashlib.sha256(
+        payload.encode("utf-8")
+    ).hexdigest()
+
+
+def save_project():
+
+    project = st.session_state.project
+
+    signature = project_signature(project)
+
+    if signature == st.session_state.last_saved_signature:
+        return
+
+    if LOCAL_STORAGE_AVAILABLE:
+
+        try:
+
+            storage.setItem(
+                STORAGE_KEY,
+                json.dumps(project),
+            )
+
+            st.session_state.last_saved_signature = signature
+
+        except Exception:
+            pass
+
+
+def load_project():
+
+    if st.session_state.storage_loaded:
+        return
+
+    st.session_state.storage_loaded = True
+
+    if not LOCAL_STORAGE_AVAILABLE:
+        return
+
+    try:
+
+        saved = storage.getItem(STORAGE_KEY)
+
+        if saved:
+
+            project = json.loads(saved)
+
+            if isinstance(project, dict):
+
+                st.session_state.project = project
+
+                st.session_state.last_saved_signature = (
+                    project_signature(project)
+                )
+
+    except Exception:
+        pass
+
+
+def reset_project():
+
+    st.session_state.project = json.loads(
+        json.dumps(DEFAULT_PROJECT)
+    )
+
+    st.session_state.last_saved_signature = None
+
+    save_project()
+
+
+# ============================================================
+# INITIALIZE
+# ============================================================
+
+initialize_session_state()
+load_project()
+
+
+# ============================================================
 # SIDEBAR
-# =========================================================
+# ============================================================
 
-st.sidebar.title(
-    "⚗️ Reactor Engineering"
-)
+with st.sidebar:
 
-page = st.sidebar.radio(
-
-    "Engineering Module",
-
-    [
-
-        "🏠 Dashboard",
-
-        "📋 Project",
-
-        "⚙️ Reactor",
-
-        "🔄 Agitator",
-
-        "📊 Scale-Up",
-
-        "🧱 Solid-Liquid",
-
-        "💨 Gas-Liquid",
-
-        "🧊 3D Reactor",
-
-        "✓ Validation",
-
-        "📚 Libraries",
-
-        "📥 Excel Export"
-    ]
-)
-
-
-# =========================================================
-# PROJECT
-# =========================================================
-
-if page == "📋 Project":
-
-    st.header(
-        "📋 Project & Analysis Configuration"
-    )
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-
-        st.session_state.project["name"] = (
-            st.text_input(
-                "Project Name",
-                st.session_state.project["name"]
-            )
-        )
-
-        st.session_state.project["product"] = (
-            st.text_input(
-                "Product / Process",
-                st.session_state.project["product"]
-            )
-        )
-
-        st.session_state.project["engineer"] = (
-            st.text_input(
-                "Process Engineer",
-                st.session_state.project["engineer"]
-            )
-        )
-
-    with c2:
-
-        reaction = st.selectbox(
-
-            "Reaction / Process Type",
-
-            REACTIONS,
-
-            index=REACTIONS.index(
-                st.session_state.project[
-                    "reaction"
-                ]
-            )
-        )
-
-        st.session_state.project[
-            "reaction"
-        ] = reaction
-
-        mode = st.selectbox(
-
-            "Analysis Mode",
-
-            ANALYSIS_MODES,
-
-            index=ANALYSIS_MODES.index(
-                st.session_state.project[
-                    "analysis_mode"
-                ]
-            )
-        )
-
-        st.session_state.project[
-            "analysis_mode"
-        ] = mode
-
-        criterion = st.selectbox(
-
-            "Primary Scale-Up Criterion",
-
-            CRITERIA,
-
-            index=CRITERIA.index(
-                st.session_state.project[
-                    "criterion"
-                ]
-            )
-        )
-
-        st.session_state.project[
-            "criterion"
-        ] = criterion
-
-    st.success(
-        "Project configuration is retained automatically during the session."
-    )
-
-    st.info(
-        """
-        You can now perform:
-
-        • One reactor calculation
-
-        • Lab → Pilot
-
-        • Pilot → Commercial
-
-        • Lab → Commercial
-
-        • Lab → Pilot → Commercial
-        """
-    )
-
-
-# =========================================================
-# REACTOR CONFIGURATION
-# =========================================================
-
-elif page == "⚙️ Reactor":
-
-    st.header(
-        "⚙️ Reactor Configuration"
-    )
-
-    scale = st.selectbox(
-
-        "Select Reactor",
-
-        [
-            "Lab",
-            "Pilot",
-            "Commercial"
-        ]
-    )
-
-    if scale not in st.session_state.reactors:
-
-        st.session_state.reactors[
-            scale
-        ] = {
-
-            "working_volume_l":
-                500,
-
-            "tank_d":
-                1.0,
-
-            "straight_height":
-                1.2,
-
-            "bottom":
-                "10% Torispherical",
-
-            "top":
-                "Flat Top",
-
-            "rho":
-                1000.0,
-
-            "viscosity":
-                1.0,
-
-            "sigma":
-                72.0,
-
-            "rpm":
-                150.0,
-
-            "baffle":
-                "Standard Vertical",
-
-            "baffle_width":
-                0.10,
-
-            "impellers":
-                []
-        }
-
-    r = st.session_state.reactors[
-        scale
-    ]
-
-    st.subheader(
-        f"{scale} Reactor"
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-
-        r["working_volume_l"] = st.number_input(
-
-            "Working Volume (L)",
-
-            min_value=0.1,
-
-            value=float(
-                r["working_volume_l"]
-            ),
-
-            key=f"{scale}_volume"
-        )
-
-        r["tank_d"] = st.number_input(
-
-            "Tank ID (m)",
-
-            min_value=0.01,
-
-            value=float(
-                r["tank_d"]
-            ),
-
-            key=f"{scale}_tank"
-        )
-
-        r["straight_height"] = st.number_input(
-
-            "Straight-Side Height (m)",
-
-            min_value=0.01,
-
-            value=float(
-                r["straight_height"]
-            ),
-
-            key=f"{scale}_height"
-        )
-
-    with c2:
-
-        r["bottom"] = st.selectbox(
-
-            "Bottom Geometry",
-
-            list(
-                BOTTOM_GEOMETRIES.keys()
-            ),
-
-            index=list(
-                BOTTOM_GEOMETRIES.keys()
-            ).index(
-                r["bottom"]
-            ),
-
-            key=f"{scale}_bottom"
-        )
-
-        r["top"] = st.selectbox(
-
-            "Top Geometry",
-
-            list(
-                TOP_GEOMETRIES.keys()
-            ),
-
-            index=list(
-                TOP_GEOMETRIES.keys()
-            ).index(
-                r["top"]
-            ),
-
-            key=f"{scale}_top"
-        )
-
-        r["rpm"] = st.number_input(
-
-            "Agitator RPM",
-
-            min_value=0.1,
-
-            value=float(
-                r["rpm"]
-            ),
-
-            key=f"{scale}_rpm"
-        )
-
-    with c3:
-
-        r["rho"] = st.number_input(
-
-            "Liquid Density (kg/m³)",
-
-            min_value=0.1,
-
-            value=float(
-                r["rho"]
-            ),
-
-            key=f"{scale}_rho"
-        )
-
-        r["viscosity"] = st.number_input(
-
-            "Viscosity (cP)",
-
-            min_value=0.01,
-
-            value=float(
-                r["viscosity"]
-            ),
-
-            key=f"{scale}_viscosity"
-        )
-
-        r["sigma"] = st.number_input(
-
-            "Surface Tension (mN/m)",
-
-            min_value=0.01,
-
-            value=float(
-                r["sigma"]
-            ),
-
-            key=f"{scale}_sigma"
-        )
-
-    # ============================================
-    # AUTOMATIC GEOMETRY
-    # ============================================
-
-    geometry = calculate_total_geometry(
-
-        r["tank_d"],
-
-        r["straight_height"],
-
-        r["bottom"],
-
-        r["top"]
-    )
-
-    liquid_height = calculate_liquid_height(
-
-        r["working_volume_l"] / 1000,
-
-        r["tank_d"],
-
-        r["straight_height"],
-
-        r["bottom"]
-    )
-
-    r["volume_m3"] = (
-        r["working_volume_l"] / 1000
-    )
-
-    r["liquid_height"] = liquid_height
-
-    r["bottom_depth"] = (
-        geometry[
-            "bottom_depth_m"
-        ]
-    )
-
-    r["top_depth"] = (
-        geometry[
-            "top_depth_m"
-        ]
-    )
-
-    st.divider()
-
-    st.subheader(
-        "📐 Automatic Geometry Calculation"
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    c1.metric(
-        "Working Volume",
-        f"{r['working_volume_l']:.1f} L"
-    )
-
-    c2.metric(
-        "Calculated Liquid Height",
-        f"{liquid_height:.3f} m"
-    )
-
-    c3.metric(
-        "Bottom Depth",
-        f"{r['bottom_depth']:.3f} m"
-    )
-
-    c4.metric(
-        "Total Vessel Geometry Volume",
-        f"{geometry['total_volume_m3']:.2f} m³"
-    )
-
-    st.info(
-        "Liquid height is calculated automatically from working volume, tank diameter and bottom geometry."
-    )
-
-    # ============================================
-    # BAFFLES
-    # ============================================
-
-    st.subheader(
-        "🧱 Baffle Configuration"
-    )
-
-    r["baffle"] = st.selectbox(
-
-        "Baffle Type",
-
-        list(
-            BAFFLES.keys()
-        ),
-
-        key=f"{scale}_baffle"
-    )
-
-    baffle_data = BAFFLES[
-        r["baffle"]
-    ]
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-
-        r["baffle_number"] = st.number_input(
-
-            "Number of Baffles",
-
-            min_value=0,
-
-            max_value=12,
-
-            value=int(
-                baffle_data[
-                    "number"
-                ]
-            ),
-
-            key=f"{scale}_baffle_number"
-        )
-
-    with c2:
-
-        r["baffle_width"] = st.number_input(
-
-            "Baffle Width (m)",
-
-            min_value=0.0,
-
-            value=float(
-                r.get(
-                    "baffle_width",
-                    r["tank_d"]
-                    * baffle_data[
-                        "width_ratio"
-                    ]
-                )
-            ),
-
-            key=f"{scale}_baffle_width"
-        )
-
-    st.session_state.reactors[
-        scale
-    ] = r
-
-    st.success(
-        f"{scale} reactor data automatically retained."
-    )
-
-
-# =========================================================
-# AGITATOR
-# =========================================================
-
-elif page == "🔄 Agitator":
-
-    st.header(
-        "🔄 Agitator Configuration"
-    )
-
-    scale = st.selectbox(
-
-        "Reactor",
-
-        [
-            "Lab",
-            "Pilot",
-            "Commercial"
-        ]
-    )
-
-    if scale not in st.session_state.reactors:
-
-        st.warning(
-            "Configure the reactor first."
-        )
-
-        st.stop()
-
-    r = st.session_state.reactors[
-        scale
-    ]
-
-    number = st.number_input(
-
-        "Number of Impellers",
-
-        min_value=1,
-
-        max_value=3,
-
-        value=max(
-            1,
-            len(
-                r.get(
-                    "impellers",
-                    []
-                )
-            )
-        )
-    )
-
-    r["impellers"] = []
-
-    for i in range(
-        int(number)
-    ):
-
-        st.subheader(
-            f"Impeller {i + 1}"
-        )
-
-        c1, c2, c3, c4 = st.columns(4)
-
-        with c1:
-
-            impeller_type = st.selectbox(
-
-                "Agitator Type",
-
-                list(
-                    AGITATORS.keys()
-                ),
-
-                key=f"{scale}_imp_type_{i}"
-            )
-
-        data = AGITATORS[
-            impeller_type
-        ]
-
-        with c2:
-
-            diameter = st.number_input(
-
-                "Impeller Diameter (m)",
-
-                min_value=0.01,
-
-                value=float(
-                    r["tank_d"]
-                    * data[
-                        "recommended_DT"
-                    ]
-                ),
-
-                key=f"{scale}_imp_d_{i}"
-            )
-
-        with c3:
-
-            elevation = st.number_input(
-
-                "Elevation from Bottom (m)",
-
-                min_value=0.0,
-
-                value=float(
-                    r["liquid_height"]
-                    * (
-                        0.25
-                        + i * 0.25
-                    )
-                ),
-
-                key=f"{scale}_imp_elev_{i}"
-            )
-
-        with c4:
-
-            active = st.checkbox(
-
-                "Active",
-
-                value=True,
-
-                key=f"{scale}_imp_active_{i}"
-            )
-
-        st.caption(
-            f"""
-            Flow: {data['flow']} |
-            Np: {data['Np']} |
-            Nq: {data['Nq']} |
-            Application: {data['application']}
-            """
-        )
-
-        r["impellers"].append({
-
-            "type":
-                impeller_type,
-
-            "diameter":
-                diameter,
-
-            "elevation":
-                elevation,
-
-            "Np":
-                data["Np"],
-
-            "Nq":
-                data["Nq"],
-
-            "blades":
-                data["blades"],
-
-            "active":
-                active
-        })
-
-    # ============================================
-    # CALCULATE
-    # ============================================
-
-    result = calculate_mixing(
-
-        r["volume_m3"],
-
-        r["rho"],
-
-        r["viscosity"],
-
-        r["rpm"],
-
-        r["impellers"]
-    )
-
-    r.update(
-        result
-    )
-
-    # Representative tip speed
-    active_impellers = [
-        x for x in r["impellers"]
-        if x["active"]
-    ]
-
-    if active_impellers:
-
-        largest = max(
-            active_impellers,
-            key=lambda x: x["diameter"]
-        )
-
-        r["impeller_d"] = (
-            largest["diameter"]
-        )
-
-        r["Tip Speed m/s"] = (
-            math.pi
-            * largest["diameter"]
-            * r["rpm"]
-            / 60
-        )
-
-    st.session_state.reactors[
-        scale
-    ] = r
-
-    st.divider()
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-
-    c1.metric(
-        "Power",
-        f"{r['Power kW']:.2f} kW"
-    )
-
-    c2.metric(
-        "P/V",
-        f"{r['P/V kW/m3']:.2f} kW/m³"
-    )
-
-    c3.metric(
-        "Pumping",
-        f"{r['Pumping m3/h']:.1f} m³/h"
-    )
-
-    c4.metric(
-        "Q/V",
-        f"{r['Q/V 1/h']:.1f} 1/h"
-    )
-
-    c5.metric(
-        "Torque",
-        f"{r['Torque Nm']:.1f} Nm"
-    )
-
-    st.dataframe(
-
-        pd.DataFrame(
-            r["Impellers"]
-        ),
-
-        use_container_width=True,
-
-        hide_index=True
-    )
-
-
-# =========================================================
-# DASHBOARD
-# =========================================================
-
-elif page == "🏠 Dashboard":
-
-    st.header(
-        "🏭 Reactor Scale-Up & Mixing Dashboard"
+    st.markdown(
+        "## 🏭 Reactor Scale-Up"
     )
 
     st.caption(
-        "Process Engineering Decision Support System"
+        "Process Engineering Dashboard"
+    )
+
+    st.divider()
+
+    page_options = [
+        "Dashboard",
+        "Project Setup",
+        "Reactor Configuration",
+        "Agitation System",
+        "Scale-Up Engine",
+        "Solid-Liquid",
+        "Gas-Liquid",
+        "Heat Transfer",
+        "3D Reactor",
+        "Validation",
+        "Libraries",
+        "Excel Export",
+    ]
+
+    selected_page = st.radio(
+        "Navigation",
+        page_options,
+        index=page_options.index(
+            st.session_state.page
+        ),
+    )
+
+    st.session_state.page = selected_page
+
+    st.divider()
+
+    st.markdown(
+        "### 💾 Project Storage"
+    )
+
+    if LOCAL_STORAGE_AVAILABLE:
+
+        st.success(
+            "Browser auto-save enabled"
+        )
+
+    else:
+
+        st.warning(
+            "Browser storage package unavailable"
+        )
+
+    if st.button(
+        "💾 Save Project Now",
+        use_container_width=True,
+    ):
+
+        save_project()
+
+        st.success(
+            "Project saved."
+        )
+
+    if st.button(
+        "♻️ Reset Project",
+        use_container_width=True,
+    ):
+
+        reset_project()
+
+        st.rerun()
+
+
+# ============================================================
+# PROJECT SHORTCUT
+# ============================================================
+
+project = st.session_state.project
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.markdown(
+    '<div class="dashboard-title">'
+    '🏭 Reactor Scale-Up & Mixing Dashboard'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="dashboard-subtitle">'
+    'Professional process engineering tool for reactor geometry, '
+    'mixing, agitation and scale-up studies'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def get_selected_scales():
+
+    mode = project.get(
+        "study_mode",
+        "Lab vs Pilot vs Commercial",
+    )
+
+    return STUDY_MODES.get(
+        mode,
+        ["Lab", "Pilot", "Commercial"],
+    )
+
+
+def reactor_data(scale):
+
+    return project["reactors"][scale]
+
+
+def calculate_all_reactors():
+
+    results = {}
+
+    for scale in get_selected_scales():
+
+        reactor = reactor_data(scale)
+
+        try:
+
+            results[scale] = calculate_reactor(
+                reactor,
+                project["reaction_type"],
+            )
+
+        except Exception as exc:
+
+            results[scale] = {
+                "error": str(exc)
+            }
+
+    return results
+
+
+def fmt(value, digits=2):
+
+    if value is None:
+        return "—"
+
+    try:
+
+        if np.isnan(value):
+            return "—"
+
+    except Exception:
+        pass
+
+    return f"{value:,.{digits}f}"
+
+
+# ============================================================
+# PAGE: PROJECT SETUP
+# ============================================================
+
+if st.session_state.page == "Project Setup":
+
+    st.markdown(
+        '<div class="section-title">'
+        '📋 Project Setup'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        project["project_name"] = st.text_input(
+            "Project Name",
+            value=project["project_name"],
+        )
+
+        project["project_number"] = st.text_input(
+            "Project Number",
+            value=project["project_number"],
+        )
+
+        project["company"] = st.text_input(
+            "Company",
+            value=project["company"],
+        )
+
+    with col2:
+
+        project["prepared_by"] = st.text_input(
+            "Prepared By",
+            value=project["prepared_by"],
+        )
+
+        project["reaction_type"] = st.selectbox(
+            "Reaction / Process Type",
+            REACTION_TYPES,
+            index=REACTION_TYPES.index(
+                project["reaction_type"]
+            ),
+        )
+
+        project["study_mode"] = st.selectbox(
+            "Study / Comparison Mode",
+            list(STUDY_MODES.keys()),
+            index=list(STUDY_MODES.keys()).index(
+                project["study_mode"]
+            ),
+        )
+
+    st.info(
+        "Only the reactor scales selected by the Study Mode "
+        "will be displayed throughout the dashboard."
+    )
+
+    project["scale_up_criterion"] = st.selectbox(
+        "Scale-Up Criterion",
+        SCALE_UP_CRITERIA,
+        index=SCALE_UP_CRITERIA.index(
+            project["scale_up_criterion"]
+        ),
+    )
+
+    project["selected_scales"] = get_selected_scales()
+
+    st.markdown("### Selected Reactor Scales")
+
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Scale": project["selected_scales"]
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    save_project()
+
+
+# ============================================================
+# PAGE: REACTOR CONFIGURATION
+# ============================================================
+
+elif st.session_state.page == "Reactor Configuration":
+
+    st.markdown(
+        '<div class="section-title">'
+        '📐 Reactor Configuration'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
     st.info(
-        f"""
-        **Project:** {st.session_state.project['name']}
-
-        **Reaction:** {st.session_state.project['reaction']}
-
-        **Analysis:** {st.session_state.project['analysis_mode']}
-
-        **Scale-Up Basis:** {st.session_state.project['criterion']}
-        """
+        "Liquid height is automatically calculated from working "
+        "volume and reactor geometry. It is not a manual input."
     )
+
+    for scale in get_selected_scales():
+
+        reactor = reactor_data(scale)
+
+        st.markdown(
+            f"## {scale} Reactor"
+        )
+
+        with st.expander(
+            f"📐 {scale} Geometry",
+            expanded=True,
+        ):
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+
+                reactor["working_volume"] = st.number_input(
+                    f"{scale} Working Volume (L)",
+                    min_value=1.0,
+                    value=float(
+                        reactor["working_volume"]
+                    ),
+                    key=f"{scale}_working_volume",
+                )
+
+                reactor["tank_id"] = st.number_input(
+                    f"{scale} Tank ID (mm)",
+                    min_value=100.0,
+                    value=float(
+                        reactor["tank_id"]
+                    ),
+                    key=f"{scale}_tank_id",
+                )
+
+                reactor[
+                    "straight_side_height"
+                ] = st.number_input(
+                    f"{scale} Straight Side Height (mm)",
+                    min_value=100.0,
+                    value=float(
+                        reactor["straight_side_height"]
+                    ),
+                    key=f"{scale}_ssh",
+                )
+
+            with col2:
+
+                reactor["bottom_type"] = st.selectbox(
+                    f"{scale} Bottom Geometry",
+                    list(
+                        REACTOR_GEOMETRY_LIBRARY.keys()
+                    ),
+                    index=list(
+                        REACTOR_GEOMETRY_LIBRARY.keys()
+                    ).index(
+                        reactor["bottom_type"]
+                    ),
+                    key=f"{scale}_bottom",
+                )
+
+                reactor["top_type"] = st.selectbox(
+                    f"{scale} Top Geometry",
+                    list(
+                        REACTOR_GEOMETRY_LIBRARY.keys()
+                    ),
+                    index=list(
+                        REACTOR_GEOMETRY_LIBRARY.keys()
+                    ).index(
+                        reactor["top_type"]
+                    ),
+                    key=f"{scale}_top",
+                )
+
+            with col3:
+
+                calculated_height = calculate_liquid_height(
+                    working_volume_l=reactor[
+                        "working_volume"
+                    ],
+                    tank_id_mm=reactor[
+                        "tank_id"
+                    ],
+                    straight_side_height_mm=reactor[
+                        "straight_side_height"
+                    ],
+                    bottom_type=reactor[
+                        "bottom_type"
+                    ],
+                    top_type=reactor[
+                        "top_type"
+                    ],
+                )
+
+                total_volume = calculate_total_volume(
+                    tank_id_mm=reactor[
+                        "tank_id"
+                    ],
+                    straight_side_height_mm=reactor[
+                        "straight_side_height"
+                    ],
+                    bottom_type=reactor[
+                        "bottom_type"
+                    ],
+                    top_type=reactor[
+                        "top_type"
+                    ],
+                )
+
+                st.metric(
+                    "Calculated Liquid Height",
+                    f"{fmt(calculated_height, 1)} mm",
+                )
+
+                st.metric(
+                    "Approx. Vessel Volume",
+                    f"{fmt(total_volume, 1)} L",
+                )
+
+                reactor[
+                    "calculated_liquid_height"
+                ] = calculated_height
+
+        with st.expander(
+            f"⚙️ Process Properties — {scale}"
+        ):
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+
+                reactor["density"] = st.number_input(
+                    "Liquid Density (kg/m³)",
+                    min_value=1.0,
+                    value=float(
+                        reactor["density"]
+                    ),
+                    key=f"{scale}_density",
+                )
+
+                reactor["viscosity"] = st.number_input(
+                    "Viscosity (cP)",
+                    min_value=0.01,
+                    value=float(
+                        reactor["viscosity"]
+                    ),
+                    key=f"{scale}_viscosity",
+                )
+
+            with col2:
+
+                reactor[
+                    "surface_tension"
+                ] = st.number_input(
+                    "Surface Tension (N/m)",
+                    min_value=0.001,
+                    value=float(
+                        reactor[
+                            "surface_tension"
+                        ]
+                    ),
+                    key=f"{scale}_surface_tension",
+                )
+
+                reactor[
+                    "solid_density"
+                ] = st.number_input(
+                    "Solid Density (kg/m³)",
+                    min_value=1.0,
+                    value=float(
+                        reactor[
+                            "solid_density"
+                        ]
+                    ),
+                    key=f"{scale}_solid_density",
+                )
+
+            with col3:
+
+                reactor[
+                    "solid_concentration"
+                ] = st.number_input(
+                    "Solid Concentration (wt%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float(
+                        reactor[
+                            "solid_concentration"
+                        ]
+                    ),
+                    key=f"{scale}_solid_conc",
+                )
+
+                reactor[
+                    "particle_size"
+                ] = st.number_input(
+                    "Particle Size (µm)",
+                    min_value=0.1,
+                    value=float(
+                        reactor[
+                            "particle_size"
+                        ]
+                    ),
+                    key=f"{scale}_particle_size",
+                )
+
+        st.divider()
+
+    save_project()
+
+
+# ============================================================
+# PAGE: AGITATION SYSTEM
+# ============================================================
+
+elif st.session_state.page == "Agitation System":
+
+    st.markdown(
+        '<div class="section-title">'
+        '⚙️ Agitation System'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.info(
+        "Select the agitator type for each reactor. "
+        "The corresponding conceptual 3D geometry is generated automatically."
+    )
+
+    for scale in get_selected_scales():
+
+        reactor = reactor_data(scale)
+
+        st.markdown(
+            f"## {scale} Agitator"
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+
+            agitator_names = list(
+                AGITATOR_LIBRARY.keys()
+            )
+
+            reactor[
+                "impeller_type"
+            ] = st.selectbox(
+                "Impeller / Agitator Type",
+                agitator_names,
+                index=agitator_names.index(
+                    reactor["impeller_type"]
+                ),
+                key=f"{scale}_agitator",
+            )
+
+        with col2:
+
+            reactor[
+                "impeller_diameter"
+            ] = st.number_input(
+                "Impeller Diameter (mm)",
+                min_value=10.0,
+                value=float(
+                    reactor[
+                        "impeller_diameter"
+                    ]
+                ),
+                key=f"{scale}_impeller_d",
+            )
+
+        with col3:
+
+            reactor[
+                "number_of_impellers"
+            ] = st.number_input(
+                "Number of Impellers",
+                min_value=1,
+                max_value=10,
+                value=int(
+                    reactor[
+                        "number_of_impellers"
+                    ]
+                ),
+                step=1,
+                key=f"{scale}_number_impellers",
+            )
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+
+            reactor["rpm"] = st.number_input(
+                "Agitator Speed (RPM)",
+                min_value=0.1,
+                value=float(
+                    reactor["rpm"]
+                ),
+                key=f"{scale}_rpm",
+            )
+
+        with col2:
+
+            reactor[
+                "impeller_clearance"
+            ] = st.number_input(
+                "Bottom Clearance (mm)",
+                min_value=0.0,
+                value=float(
+                    reactor[
+                        "impeller_clearance"
+                    ]
+                ),
+                key=f"{scale}_clearance",
+            )
+
+        with col3:
+
+            reactor["baffles"] = st.number_input(
+                "Number of Baffles",
+                min_value=0,
+                max_value=12,
+                value=int(
+                    reactor["baffles"]
+                ),
+                step=1,
+                key=f"{scale}_baffles",
+            )
+
+        agitator = get_agitator(
+            reactor["impeller_type"]
+        )
+
+        st.markdown(
+            f"**Selected:** {reactor['impeller_type']}"
+        )
+
+        st.write(
+            agitator.get(
+                "description",
+                "Agitator geometry from engineering library.",
+            )
+        )
+
+        st.caption(
+            "Np/Nq values are correlation/library dependent. "
+            "RCI values should be entered from validated vendor/literature data "
+            "when required."
+        )
+
+        if reactor[
+            "impeller_type"
+        ] == "Retreating Curve Impeller (RCI)":
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+
+                np_value = st.number_input(
+                    "RCI Np Override",
+                    min_value=0.0,
+                    value=float(
+                        reactor["np_override"]
+                        or 0.0
+                    ),
+                    key=f"{scale}_rci_np",
+                )
+
+                reactor["np_override"] = (
+                    np_value
+                    if np_value > 0
+                    else None
+                )
+
+            with col2:
+
+                nq_value = st.number_input(
+                    "RCI Nq Override",
+                    min_value=0.0,
+                    value=float(
+                        reactor["nq_override"]
+                        or 0.0
+                    ),
+                    key=f"{scale}_rci_nq",
+                )
+
+                reactor["nq_override"] = (
+                    nq_value
+                    if nq_value > 0
+                    else None
+                )
+
+        st.divider()
+
+    save_project()
+
+
+# ============================================================
+# PAGE: SCALE-UP ENGINE
+# ============================================================
+
+elif st.session_state.page == "Scale-Up Engine":
+
+    st.markdown(
+        '<div class="section-title">'
+        '📈 Scale-Up Engine'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    project[
+        "scale_up_criterion"
+    ] = st.selectbox(
+        "Scale-Up Basis",
+        SCALE_UP_CRITERIA,
+        index=SCALE_UP_CRITERIA.index(
+            project[
+                "scale_up_criterion"
+            ]
+        ),
+    )
+
+    selected = get_selected_scales()
+
+    st.markdown(
+        "### Selected Scale-Up Study"
+    )
+
+    st.write(
+        " → ".join(selected)
+    )
+
+    results = calculate_all_reactors()
 
     rows = []
 
-    for name, r in st.session_state.reactors.items():
+    for scale in selected:
 
-        if "Power kW" not in r:
+        result = results.get(scale, {})
 
+        if "error" in result:
             continue
 
-        rows.append({
-
-            "Reactor":
-                name,
-
-            "Working Volume L":
-                r["volume_m3"] * 1000,
-
-            "Liquid Height m":
-                r["liquid_height"],
-
-            "RPM":
-                r["rpm"],
-
-            "Power kW":
-                r["Power kW"],
-
-            "P/V kW/m3":
-                r["P/V kW/m3"],
-
-            "Tip Speed m/s":
-                r.get(
-                    "Tip Speed m/s",
-                    0
+        rows.append(
+            {
+                "Scale": scale,
+                "Volume (L)": result.get(
+                    "working_volume"
                 ),
-
-            "Pumping m3/h":
-                r["Pumping m3/h"],
-
-            "Q/V 1/h":
-                r["Q/V 1/h"],
-
-            "Turnover min":
-                r["Turnover min"]
-        })
+                "RPM": result.get(
+                    "rpm"
+                ),
+                "Impeller (mm)": result.get(
+                    "impeller_diameter"
+                ),
+                "Power (kW)": result.get(
+                    "power_kw"
+                ),
+                "P/V (kW/m³)": result.get(
+                    "power_per_volume"
+                ),
+                "Tip Speed (m/s)": result.get(
+                    "tip_speed"
+                ),
+                "Pumping (m³/h)": result.get(
+                    "pumping_capacity"
+                ),
+                "Re": result.get(
+                    "reynolds_number"
+                ),
+                "Fr": result.get(
+                    "froude_number"
+                ),
+            }
+        )
 
     if rows:
 
         st.dataframe(
-
             pd.DataFrame(rows),
-
             use_container_width=True,
-
-            hide_index=True
+            hide_index=True,
         )
 
-    else:
-
-        st.warning(
-            "Configure a reactor and agitator to generate results."
-        )
+    save_project()
 
 
-# =========================================================
-# SCALE-UP
-# =========================================================
+# ============================================================
+# PAGE: DASHBOARD
+# ============================================================
 
-elif page == "📊 Scale-Up":
+elif st.session_state.page == "Dashboard":
 
-    st.header(
-        "📊 Scale-Up Engine"
+    results = calculate_all_reactors()
+
+    selected = get_selected_scales()
+
+    st.markdown(
+        '<div class="section-title">'
+        '📊 Engineering Dashboard'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
-    mode = st.session_state.project[
-        "analysis_mode"
-    ]
-
-    criterion = st.selectbox(
-        "Scale-Up Criterion",
-        CRITERIA,
-        index=CRITERIA.index(
-            st.session_state.project[
-                "criterion"
-            ]
-        )
+    st.info(
+        f"Study: {project['study_mode']} | "
+        f"Reaction Type: {project['reaction_type']} | "
+        f"Scale-Up Basis: {project['scale_up_criterion']}"
     )
 
-    if mode == "Single Reactor":
+    # --------------------------------------------------------
+    # KPI CARDS
+    # --------------------------------------------------------
 
-        st.info(
-            "Single Reactor mode selected. No comparison is required."
+    for scale in selected:
+
+        result = results.get(scale, {})
+
+        if "error" in result:
+            st.error(
+                f"{scale}: {result['error']}"
+            )
+            continue
+
+        st.markdown(
+            f"### {scale}"
         )
 
-    else:
+        c1, c2, c3, c4, c5 = st.columns(5)
 
-        pairs = {
+        with c1:
 
-            "Lab vs Pilot":
-                ("Lab", "Pilot"),
-
-            "Pilot vs Commercial":
-                ("Pilot", "Commercial"),
-
-            "Lab vs Commercial":
-                ("Lab", "Commercial")
-        }
-
-        if mode in pairs:
-
-            reference_name, target_name = (
-                pairs[mode]
+            st.metric(
+                "Working Volume",
+                f"{fmt(result.get('working_volume'), 1)} L",
             )
 
-            reference = (
-                st.session_state.reactors.get(
-                    reference_name
-                )
+        with c2:
+
+            st.metric(
+                "Liquid Height",
+                f"{fmt(result.get('liquid_height'), 0)} mm",
             )
 
-            target = (
-                st.session_state.reactors.get(
-                    target_name
-                )
+        with c3:
+
+            st.metric(
+                "Power",
+                f"{fmt(result.get('power_kw'), 2)} kW",
             )
 
-            if not reference or not target:
+        with c4:
 
-                st.warning(
-                    f"Configure {reference_name} and {target_name} reactors first."
-                )
+            st.metric(
+                "P/V",
+                f"{fmt(result.get('power_per_volume'), 2)} kW/m³",
+            )
 
-            else:
+        with c5:
 
-                calculated_rpm = (
-                    calculate_scaleup_rpm(
-                        criterion,
-                        reference,
-                        target
-                    )
-                )
+            st.metric(
+                "Tip Speed",
+                f"{fmt(result.get('tip_speed'), 2)} m/s",
+            )
 
-                c1, c2, c3 = st.columns(3)
+        st.divider()
 
-                c1.metric(
-                    f"{reference_name} RPM",
-                    f"{reference['rpm']:.1f}"
-                )
+    # --------------------------------------------------------
+    # COMPARISON
+    # --------------------------------------------------------
 
-                c2.metric(
-                    f"Calculated {target_name} RPM",
-                    f"{calculated_rpm:.1f}"
-                )
+    if len(selected) > 1:
 
-                c3.metric(
-                    f"Actual {target_name} RPM",
-                    f"{target['rpm']:.1f}"
-                )
-
-                deviation = (
-
-                    (
-                        target["rpm"]
-                        - calculated_rpm
-                    )
-                    / calculated_rpm
-                    * 100
-
-                    if calculated_rpm
-                    else 0
-                )
-
-                st.metric(
-                    "RPM Deviation",
-                    f"{deviation:.1f}%"
-                )
-
-                comparison = pd.DataFrame({
-
-                    "Parameter": [
-
-                        "Working Volume L",
-
-                        "RPM",
-
-                        "Power kW",
-
-                        "P/V kW/m3",
-
-                        "Tip Speed m/s",
-
-                        "Pumping m3/h",
-
-                        "Q/V 1/h",
-
-                        "Turnover min"
-                    ],
-
-                    reference_name: [
-
-                        reference[
-                            "volume_m3"
-                        ] * 1000,
-
-                        reference[
-                            "rpm"
-                        ],
-
-                        reference.get(
-                            "Power kW",
-                            0
-                        ),
-
-                        reference.get(
-                            "P/V kW/m3",
-                            0
-                        ),
-
-                        reference.get(
-                            "Tip Speed m/s",
-                            0
-                        ),
-
-                        reference.get(
-                            "Pumping m3/h",
-                            0
-                        ),
-
-                        reference.get(
-                            "Q/V 1/h",
-                            0
-                        ),
-
-                        reference.get(
-                            "Turnover min",
-                            0
-                        )
-                    ],
-
-                    target_name: [
-
-                        target[
-                            "volume_m3"
-                        ] * 1000,
-
-                        target[
-                            "rpm"
-                        ],
-
-                        target.get(
-                            "Power kW",
-                            0
-                        ),
-
-                        target.get(
-                            "P/V kW/m3",
-                            0
-                        ),
-
-                        target.get(
-                            "Tip Speed m/s",
-                            0
-                        ),
-
-                        target.get(
-                            "Pumping m3/h",
-                            0
-                        ),
-
-                        target.get(
-                            "Q/V 1/h",
-                            0
-                        ),
-
-                        target.get(
-                            "Turnover min",
-                            0
-                        )
-                    ]
-                })
-
-                st.dataframe(
-                    comparison,
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-        elif mode == "Lab vs Pilot vs Commercial":
-
-            available = [
-
-                x for x in
-                [
-                    "Lab",
-                    "Pilot",
-                    "Commercial"
-                ]
-
-                if x in
-                st.session_state.reactors
-            ]
-
-            rows = []
-
-            for name in available:
-
-                r = (
-                    st.session_state.reactors[
-                        name
-                    ]
-                )
-
-                rows.append({
-
-                    "Parameter":
-                        name,
-
-                    "Volume L":
-                        r.get(
-                            "volume_m3",
-                            0
-                        ) * 1000,
-
-                    "RPM":
-                        r.get(
-                            "rpm",
-                            0
-                        ),
-
-                    "Power kW":
-                        r.get(
-                            "Power kW",
-                            0
-                        ),
-
-                    "P/V":
-                        r.get(
-                            "P/V kW/m3",
-                            0
-                        ),
-
-                    "Tip Speed":
-                        r.get(
-                            "Tip Speed m/s",
-                            0
-                        ),
-
-                    "Pumping":
-                        r.get(
-                            "Pumping m3/h",
-                            0
-                        ),
-
-                    "Q/V":
-                        r.get(
-                            "Q/V 1/h",
-                            0
-                        ),
-
-                    "Turnover":
-                        r.get(
-                            "Turnover min",
-                            0
-                        )
-                })
-
-            if rows:
-
-                st.dataframe(
-                    pd.DataFrame(rows),
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-
-# =========================================================
-# SOLID LIQUID
-# =========================================================
-
-elif page == "🧱 Solid-Liquid":
-
-    st.header(
-        "🧱 Solid-Liquid Suspension"
-    )
-
-    reactor_name = st.selectbox(
-
-        "Reactor",
-
-        list(
-            st.session_state.reactors.keys()
+        st.markdown(
+            "### 🔄 Scale Comparison"
         )
+
+        try:
+
+            comparison = compare_reactors(
+                results,
+                selected,
+            )
+
+            st.dataframe(
+                pd.DataFrame(comparison),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        except Exception as exc:
+
+            st.warning(
+                f"Comparison unavailable: {exc}"
+            )
+
+    save_project()
+
+
+# ============================================================
+# PAGE: SOLID-LIQUID
+# ============================================================
+
+elif st.session_state.page == "Solid-Liquid":
+
+    st.markdown(
+        '<div class="section-title">'
+        '🧱 Solid-Liquid Mixing'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
-    if reactor_name:
+    st.info(
+        "Njs calculations are screening-level unless a validated "
+        "suspension correlation and coefficient are supplied."
+    )
 
-        r = (
-            st.session_state.reactors[
-                reactor_name
-            ]
+    for scale in get_selected_scales():
+
+        reactor = reactor_data(scale)
+
+        result = calculate_reactor(
+            reactor,
+            "Solid-Liquid",
+        )
+
+        st.markdown(
+            f"### {scale}"
         )
 
         c1, c2, c3 = st.columns(3)
 
         with c1:
 
-            rho_solid = st.number_input(
-                "Solid Density kg/m³",
-                value=2500.0
+            st.metric(
+                "Solid Concentration",
+                f"{reactor['solid_concentration']:.2f} wt%",
             )
 
         with c2:
 
-            particle_size = st.number_input(
-                "Particle Size µm",
-                value=100.0
+            njs = result.get(
+                "njs_rpm"
+            )
+
+            st.metric(
+                "Njs",
+                (
+                    f"{fmt(njs, 1)} RPM"
+                    if njs is not None
+                    else "Not Available"
+                ),
             )
 
         with c3:
 
-            solids = st.number_input(
-                "Solids wt%",
-                value=10.0
-            )
-
-        suspension_factor = st.number_input(
-            "Suspension Correlation Factor",
-            value=1.30
-        )
-
-        impeller_d = r.get(
-            "impeller_d",
-            0.3
-        )
-
-        njs = calculate_njs(
-
-            r["rho"],
-
-            rho_solid,
-
-            particle_size,
-
-            solids,
-
-            impeller_d,
-
-            suspension_factor
-        )
-
-        ratio = (
-            r["rpm"]
-            / njs
-            if njs > 0
-            else 0
-        )
-
-        c1, c2, c3 = st.columns(3)
-
-        c1.metric(
-            "Njs",
-            f"{njs:.1f} RPM"
-        )
-
-        c2.metric(
-            "Actual RPM",
-            f"{r['rpm']:.1f}"
-        )
-
-        c3.metric(
-            "N/Njs",
-            f"{ratio:.2f}"
-        )
-
-        if ratio >= 1.2:
-
-            st.success(
-                "PASS — Agitation is above the screening Njs margin."
-            )
-
-        elif ratio >= 1.0:
-
-            st.warning(
-                "WARNING — Suspension is close to Njs."
-            )
-
-        else:
-
-            st.error(
-                "FAIL — Agitation is below estimated Njs."
-            )
-
-        st.caption(
-            "Engineering screening correlation only. Validate Njs against pilot/vendor/CFD data before final design."
-        )
-
-
-# =========================================================
-# GAS LIQUID
-# =========================================================
-
-elif page == "💨 Gas-Liquid":
-
-    st.header(
-        "💨 Gas-Liquid Mixing"
-    )
-
-    reactor_name = st.selectbox(
-
-        "Reactor",
-
-        list(
-            st.session_state.reactors.keys()
-        )
-    )
-
-    if reactor_name:
-
-        r = (
-            st.session_state.reactors[
-                reactor_name
-            ]
-        )
-
-        gas_flow = st.number_input(
-            "Gas Flow Nm³/h",
-            value=25.0
-        )
-
-        area = (
-            math.pi
-            * r["tank_d"]**2
-            / 4
-        )
-
-        superficial_velocity = (
-
-            gas_flow / 3600
-        ) / area
-
-        vvm = (
-
-            gas_flow
-            / 60
-            / r["volume_m3"]
-        )
-
-        st.metric(
-            "VVM",
-            f"{vvm:.3f}"
-        )
-
-        st.metric(
-            "Superficial Gas Velocity",
-            f"{superficial_velocity:.4f} m/s"
-        )
-
-        st.info(
-            "Gas holdup and kLa require validated gas-liquid correlations and should not be treated as universal constants."
-        )
-
-
-# =========================================================
-# 3D REACTOR
-# =========================================================
-
-elif page == "🧊 3D Reactor":
-
-    st.header(
-        "🧊 3D Reactor Geometry"
-    )
-
-    reactor_name = st.selectbox(
-
-        "Select Reactor",
-
-        list(
-            st.session_state.reactors.keys()
-        )
-    )
-
-    r = (
-        st.session_state.reactors[
-            reactor_name
-        ]
-    )
-
-    if not r.get(
-        "impellers"
-    ):
-
-        st.warning(
-            "Configure agitators first."
-        )
-
-    else:
-
-        fig = create_reactor_3d(
-
-            r["tank_d"],
-
-            r["liquid_height"],
-
-            r["straight_height"],
-
-            r["bottom_depth"],
-
-            r["top_depth"],
-
-            r["impellers"],
-
-            r.get(
-                "baffle_number",
-                4
-            ),
-
-            r.get(
-                "baffle_width",
-                0.1
-            )
-        )
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
-
-        st.caption(
-            "Conceptual 3D engineering visualization — not a CFD/CAD model."
-        )
-
-
-# =========================================================
-# VALIDATION
-# =========================================================
-
-elif page == "✓ Validation":
-
-    st.header(
-        "✓ Engineering Validation"
-    )
-
-    if not st.session_state.reactors:
-
-        st.warning(
-            "No reactor configured."
-        )
-
-    else:
-
-        reactor_name = st.selectbox(
-
-            "Reactor",
-
-            list(
-                st.session_state.reactors.keys()
-            )
-        )
-
-        r = (
-            st.session_state.reactors[
-                reactor_name
-            ]
-        )
-
-        checks = validation_checks(
-            r
-        )
-
-        for status, message in checks:
-
-            if status == "PASS":
+            if njs and reactor["rpm"] >= njs:
 
                 st.success(
-                    f"✓ {message}"
-                )
-
-            elif status == "WARNING":
-
-                st.warning(
-                    f"⚠ {message}"
+                    "Suspension Speed: PASS"
                 )
 
             else:
 
-                st.error(
-                    f"✕ {message}"
+                st.warning(
+                    "Suspension Speed: CHECK"
                 )
 
 
-# =========================================================
-# LIBRARIES
-# =========================================================
+# ============================================================
+# PAGE: GAS-LIQUID
+# ============================================================
 
-elif page == "📚 Libraries":
+elif st.session_state.page == "Gas-Liquid":
 
-    st.header(
-        "📚 Engineering Libraries"
+    st.markdown(
+        '<div class="section-title">'
+        '💨 Gas-Liquid Mixing'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
-    tab1, tab2, tab3 = st.tabs(
+    for scale in get_selected_scales():
+
+        reactor = reactor_data(scale)
+
+        result = calculate_reactor(
+            reactor,
+            "Gas-Liquid",
+        )
+
+        st.markdown(
+            f"### {scale}"
+        )
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+
+            reactor[
+                "gas_flow"
+            ] = st.number_input(
+                "Gas Flow (m³/h)",
+                min_value=0.0,
+                value=float(
+                    reactor[
+                        "gas_flow"
+                    ]
+                ),
+                key=f"{scale}_gas_flow",
+            )
+
+        with c2:
+
+            st.metric(
+                "KLa Screening",
+                (
+                    f"{fmt(result.get('kla'), 3)} 1/s"
+                    if result.get("kla") is not None
+                    else "—"
+                ),
+            )
+
+        with c3:
+
+            st.metric(
+                "Gas Flow",
+                f"{fmt(reactor['gas_flow'], 2)} m³/h",
+            )
+
+    save_project()
+
+
+# ============================================================
+# PAGE: HEAT TRANSFER
+# ============================================================
+
+elif st.session_state.page == "Heat Transfer":
+
+    st.markdown(
+        '<div class="section-title">'
+        '🔥 Heat Transfer'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.info(
+        "Heat-transfer calculations shown here are preliminary "
+        "engineering estimates. Final exchanger/reactor jacket design "
+        "requires validated U values and thermal duty."
+    )
+
+    for scale in get_selected_scales():
+
+        reactor = reactor_data(scale)
+
+        result = calculate_reactor(
+            reactor,
+            project["reaction_type"],
+        )
+
+        st.markdown(
+            f"### {scale}"
+
+        )
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+
+            st.metric(
+                "Approx. Reactor Diameter",
+                f"{fmt(reactor['tank_id'], 0)} mm",
+            )
+
+        with c2:
+
+            st.metric(
+                "Liquid Height",
+                f"{fmt(result.get('liquid_height'), 0)} mm",
+            )
+
+        with c3:
+
+            st.metric(
+                "Estimated Heat Transfer Area",
+                f"{fmt(result.get('heat_transfer_area'), 2)} m²",
+            )
+
+
+# ============================================================
+# PAGE: 3D REACTOR
+# ============================================================
+
+elif st.session_state.page == "3D Reactor":
+
+    st.markdown(
+        '<div class="section-title">'
+        '🧊 3D Reactor & Agitator Visualization'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.info(
+        "The 3D model is a conceptual engineering visualization "
+        "generated from the entered reactor geometry and selected "
+        "agitator type. It is not manufacturer CAD."
+    )
+
+    selected = get_selected_scales()
+
+    scale = st.selectbox(
+        "Select Reactor",
+        selected,
+    )
+
+    reactor = reactor_data(scale)
+
+    result = calculate_reactor(
+        reactor,
+        project["reaction_type"],
+    )
+
+    try:
+
+        fig = create_reactor_3d(
+            reactor,
+            result,
+            project["reaction_type"],
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+        )
+
+    except Exception as exc:
+
+        st.error(
+            f"3D visualization error: {exc}"
+        )
+
+
+# ============================================================
+# PAGE: VALIDATION
+# ============================================================
+
+elif st.session_state.page == "Validation":
+
+    st.markdown(
+        '<div class="section-title">'
+        '✅ Engineering Validation'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    for scale in get_selected_scales():
+
+        reactor = reactor_data(scale)
+
+        result = calculate_reactor(
+            reactor,
+            project["reaction_type"],
+        )
+
+        checks = validation_checks(
+            reactor,
+            result,
+            project["reaction_type"],
+        )
+
+        st.markdown(
+            f"### {scale}"
+        )
+
+        if not checks:
+
+            st.info(
+                "No validation checks available."
+            )
+
+            continue
+
+        validation_df = pd.DataFrame(
+            checks
+        )
+
+        st.dataframe(
+            validation_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# ============================================================
+# PAGE: LIBRARIES
+# ============================================================
+
+elif st.session_state.page == "Libraries":
+
+    st.markdown(
+        '<div class="section-title">'
+        '📚 Engineering Libraries'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    tab1, tab2 = st.tabs(
         [
-            "Agitators",
-            "Baffles",
-            "Geometry"
+            "Agitator Library",
+            "Reactor Geometry Library",
         ]
     )
 
@@ -1672,353 +1614,136 @@ elif page == "📚 Libraries":
 
         rows = []
 
-        for name, data in AGITATORS.items():
+        for name, data in AGITATOR_LIBRARY.items():
 
-            rows.append({
-
-                "Agitator":
-                    name,
-
-                "Category":
-                    data["category"],
-
-                "Flow":
-                    data["flow"],
-
-                "Np":
-                    data["Np"],
-
-                "Nq":
-                    data["Nq"],
-
-                "Blades":
-                    data["blades"],
-
-                "Recommended D/T":
-                    data["recommended_DT"],
-
-                "Application":
-                    data["application"],
-
-                "Reference":
-                    data["reference"]
-            })
+            rows.append(
+                {
+                    "Agitator": name,
+                    "Description": data.get(
+                        "description",
+                        "",
+                    ),
+                    "Np": data.get(
+                        "Np"
+                    ),
+                    "Nq": data.get(
+                        "Nq"
+                    ),
+                    "Application": data.get(
+                        "application",
+                        "",
+                    ),
+                }
+            )
 
         st.dataframe(
             pd.DataFrame(rows),
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
         )
 
     with tab2:
 
-        st.dataframe(
-            pd.DataFrame(
-                BAFFLES
-            ).T,
-            use_container_width=True
-        )
+        rows = []
 
-    with tab3:
-
-        st.subheader(
-            "Bottom Geometry"
-        )
-
-        st.dataframe(
-            pd.DataFrame(
-                BOTTOM_GEOMETRIES
-            ).T,
-            use_container_width=True
-        )
-
-        st.subheader(
-            "Top Geometry"
-        )
-
-        st.dataframe(
-            pd.DataFrame(
-                TOP_GEOMETRIES
-            ).T,
-            use_container_width=True
-        )
-
-
-# =========================================================
-# EXCEL EXPORT
-# =========================================================
-
-elif page == "📥 Excel Export":
-
-    st.header(
-        "📥 Engineering Excel Export"
-    )
-
-    output = io.BytesIO()
-
-    with pd.ExcelWriter(
-        output,
-        engine="openpyxl"
-    ) as writer:
-
-        # ============================================
-        # PROJECT
-        # ============================================
-
-        pd.DataFrame(
-            [
-                st.session_state.project
-            ]
-        ).to_excel(
-            writer,
-            sheet_name="Project",
-            index=False
-        )
-
-        # ============================================
-        # REACTOR INPUTS + RESULTS
-        # ============================================
-
-        for name, r in (
-            st.session_state.reactors.items()
+        for name, data in (
+            REACTOR_GEOMETRY_LIBRARY.items()
         ):
 
-            reactor_data = {
-
-                "Reactor":
-                    name,
-
-                "Working Volume L":
-                    r.get(
-                        "working_volume_l"
+            rows.append(
+                {
+                    "Geometry": name,
+                    "Type": data.get(
+                        "type",
+                        "",
                     ),
-
-                "Tank ID m":
-                    r.get(
-                        "tank_d"
+                    "Description": data.get(
+                        "description",
+                        "",
                     ),
-
-                "Straight Height m":
-                    r.get(
-                        "straight_height"
-                    ),
-
-                "Bottom":
-                    r.get(
-                        "bottom"
-                    ),
-
-                "Top":
-                    r.get(
-                        "top"
-                    ),
-
-                "Calculated Liquid Height m":
-                    r.get(
-                        "liquid_height"
-                    ),
-
-                "Bottom Depth m":
-                    r.get(
-                        "bottom_depth"
-                    ),
-
-                "Top Depth m":
-                    r.get(
-                        "top_depth"
-                    ),
-
-                "Density kg/m3":
-                    r.get(
-                        "rho"
-                    ),
-
-                "Viscosity cP":
-                    r.get(
-                        "viscosity"
-                    ),
-
-                "RPM":
-                    r.get(
-                        "rpm"
-                    ),
-
-                "Power kW":
-                    r.get(
-                        "Power kW"
-                    ),
-
-                "P/V kW/m3":
-                    r.get(
-                        "P/V kW/m3"
-                    ),
-
-                "Pumping m3/h":
-                    r.get(
-                        "Pumping m3/h"
-                    ),
-
-                "Q/V 1/h":
-                    r.get(
-                        "Q/V 1/h"
-                    ),
-
-                "Turnover min":
-                    r.get(
-                        "Turnover min"
-                    ),
-
-                "Torque Nm":
-                    r.get(
-                        "Torque Nm"
-                    )
-            }
-
-            pd.DataFrame(
-                [reactor_data]
-            ).to_excel(
-                writer,
-                sheet_name=f"{name} Reactor",
-                index=False
+                }
             )
 
-            # ========================================
-            # IMPELLERS
-            # ========================================
-
-            if r.get(
-                "Impellers"
-            ):
-
-                pd.DataFrame(
-                    r["Impellers"]
-                ).to_excel(
-                    writer,
-                    sheet_name=f"{name} Impellers",
-                    index=False
-                )
-
-        # ============================================
-        # COMPARISON
-        # ============================================
-
-        comparison_rows = []
-
-        for name, r in (
-            st.session_state.reactors.items()
-        ):
-
-            comparison_rows.append({
-
-                "Reactor":
-                    name,
-
-                "Volume L":
-                    r.get(
-                        "volume_m3",
-                        0
-                    ) * 1000,
-
-                "Liquid Height m":
-                    r.get(
-                        "liquid_height",
-                        0
-                    ),
-
-                "RPM":
-                    r.get(
-                        "rpm",
-                        0
-                    ),
-
-                "Power kW":
-                    r.get(
-                        "Power kW",
-                        0
-                    ),
-
-                "P/V kW/m3":
-                    r.get(
-                        "P/V kW/m3",
-                        0
-                    ),
-
-                "Tip Speed m/s":
-                    r.get(
-                        "Tip Speed m/s",
-                        0
-                    ),
-
-                "Pumping m3/h":
-                    r.get(
-                        "Pumping m3/h",
-                        0
-                    ),
-
-                "Q/V 1/h":
-                    r.get(
-                        "Q/V 1/h",
-                        0
-                    ),
-
-                "Turnover min":
-                    r.get(
-                        "Turnover min",
-                        0
-                    )
-            })
-
-        pd.DataFrame(
-            comparison_rows
-        ).to_excel(
-            writer,
-            sheet_name="Comparison",
-            index=False
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
         )
 
-        # ============================================
-        # AGITATOR LIBRARY
-        # ============================================
 
-        agitator_rows = []
+# ============================================================
+# PAGE: EXCEL EXPORT
+# ============================================================
 
-        for name, data in AGITATORS.items():
+elif st.session_state.page == "Excel Export":
 
-            row = {
-                "Agitator":
-                    name
-            }
+    st.markdown(
+        '<div class="section-title">'
+        '📥 Excel Export'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
-            row.update(data)
+    st.write(
+        "Generate a professional workbook containing project "
+        "inputs, reactor geometry, agitation data, calculated results, "
+        "comparison results and engineering libraries."
+    )
 
-            agitator_rows.append(
-                row
+    if st.button(
+        "📊 Generate Excel Workbook",
+        type="primary",
+        use_container_width=True,
+    ):
+
+        from calculations.engine import create_excel_workbook
+
+        try:
+
+            results = calculate_all_reactors()
+
+            excel_file = create_excel_workbook(
+                project,
+                results,
             )
 
-        pd.DataFrame(
-            agitator_rows
-        ).to_excel(
-            writer,
-            sheet_name="Agitator Library",
-            index=False
-        )
+            st.download_button(
+                label="⬇️ Download Excel File",
+                data=excel_file,
+                file_name=(
+                    f"{project['project_name']}"
+                    "_Reactor_ScaleUp.xlsx"
+                ),
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+                use_container_width=True,
+            )
 
-    st.download_button(
+        except Exception as exc:
 
-        "⬇️ Download Complete Engineering Excel",
+            st.error(
+                f"Excel generation failed: {exc}"
+            )
 
-        output.getvalue(),
 
-        file_name=(
-            "Reactor_ScaleUp_Engineering.xlsx"
-        ),
+# ============================================================
+# AUTO SAVE
+# ============================================================
 
-        mime=(
-            "application/vnd.openxmlformats-officedocument."
-            "spreadsheetml.sheet"
-        )
-    )
+save_project()
 
-    st.success(
-        "Complete engineering workbook generated."
-    )
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.divider()
+
+st.caption(
+    "Reactor Scale-Up Dashboard | "
+    "Process Engineering Tool | "
+    "Screening calculations require engineering validation before "
+    "final equipment/design decisions."
+)
